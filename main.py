@@ -15,7 +15,7 @@ from mpl_toolkits.mplot3d.proj3d import persp_transformation
 # spinangle2: Angle of the spin axis relative to the horizontal plane, CCW from the perspective of the observer (degrees)
 # spinalt: Angle of the spin axis relative to the Y-axis, 0° means pointing straight left (degrees)
 class Launch:
-    def __init__(self, velocity, angle2, alt2, rpm, spinangle2, spinalt):
+    def __init__(self, velocity, angle2, alt2, rpm, spinangle2, teeh=0, spinalt=0):
         angle = angle2 * np.pi / 180  # Convert angle to radians
         alt = alt2 * np.pi / 180  # Convert altitude to radians
         spinangle = spinangle2 * np.pi / 180  # Convert spin angle to radians
@@ -34,25 +34,32 @@ class Launch:
 class Air:
     def __init__(self, wind):
         self.v = wind
-        self.density = 1.204  # Standard air density
+        self.density = 1.204  # Standard air density ( 20C)
         self.viscosity = 0.0000151  # Standard air viscosity
 
-
+    def windshear(self, z):
+        #return (self.v / np.log(5 / 0.03)) * np.log(z / 0.03)
+        if z > 0.03:
+            return (self.v / np.log(5 / 0.03)) * np.log(z / 0.03) # Assuming open country conditions
+        else:
+            return 0
 # Class representing a golf ball, including its physical properties and current state
 # launch: Launch object containing initial launch conditions
 # air: Air object containing atmospheric conditions
 class Ball:
     def __init__(self, launch, air):
-        self.radius = .043 / 2.0  # Ball radius (m)
-        self.mass = 0.045  # Ball mass (kg)
+
+        self.air = air
+        self.radius = .0427 / 2.0  # Ball radius (m)
+        self.mass = 0.045927  # Ball mass (kg)
         self.area = (self.radius ** 2) * np.pi  # Cross-sectional area of the ball (m^2)
         self.p = np.array([0.0, 0.0, 0.0])  # Initial position vector (m)
-        self.v = launch.velocity - air.v  # Initial velocity relative to air (m/s)
+        self.v = launch.velocity - self.windv() # Initial velocity relative to air (m/s)
         self.angularvelocity = launch.spin  # Angular velocity (rad/s)
         self.spinaxis = launch.spinaxis  # Spin axis vector
         self.spin = self.radius * launch.spin / np.linalg.norm(self.v)  # Non-dimensional spin rate, unsure on 2
 
-        self.air = air  # Reference to air properties
+        #self.air = air  # Reference to air properties
 
         # Coefficients for drag, lift, and spin decay, fitted using cubic splines
         # Data sourced from Mizota
@@ -62,12 +69,12 @@ class Ball:
                 [0.2146, 0.2277, 0.2453, 0.2781, 0.3153, 0.3657, 0.4161, 0.4599, 0.5058, 0.5365],
                 bc_type='natural'),  # Drag coefficient (CD) as a function of spin rate
             inter.CubicSpline(
-                [0.0, 0.0314, 0.04878, 0.0741, 0.1102, 0.1532, 0.2130, 0.2711, 0.3451, 0.4298, 0.5846, 0.8130, 1.2346],
-                [0.0, 0.0971, 0.1146, 0.1405, 0.1708, 0.2053, 0.2505, 0.2849, 0.3236, 0.3602, 0.3947, 0.4292, 0.4701],
-                bc_type='natural'),  # Lift coefficient (CL) as a function of spin rate
+                [0,0.0314, 0.04878, 0.0741, 0.1102, 0.1532, 0.2130, 0.2711, 0.3451, 0.4298, 0.5846, 0.8130, 1.2346],
+                [0,0.0971, 0.1146, 0.1405, 0.1708, 0.2053, 0.2505, 0.2849, 0.3236, 0.3602, 0.3947, 0.4292, 0.4701],
+                bc_type='natural'),  # Lift coefficient (CL) as a function of spin rate, are zeros correct?
             inter.CubicSpline(
-                [0.0113,0.0206,0.0404,0.0737,0.1476,0.2690, 0.3979,0.5242,0.6440],
-                [0.00142,0.00146,0.00151,0.00167,0.0019, 0.00296,0.00437,0.00627,0.00948],
+                [0,0.0113,0.0206,0.0404,0.0737,0.1476,0.2690, 0.3979,0.5242,0.6440],
+                [0,0.00142,0.00146,0.00151,0.00167,0.0019, 0.00296,0.00437,0.00627,0.00948],
                 bc_type='natural'),  # Moment coefficient (CM) as a function of spin rate
 
         ])
@@ -78,23 +85,28 @@ class Ball:
 
     # Retrieve the lift coefficient based on the current spin rate
     def liftcoef(self):
+
         return self.coefs[1](self.spin) * 1
+
 
     # Retrieve the drag coefficient based on the current spin rate
     def dragcoef(self):
 
-        return self.coefs[0](self.spin)
+        return self.coefs[0](self.spin) * 1
+
 
     def decaycoef(self):
         #print(self.angularvelocity * self.radius/ np.linalg.norm(self.v))
         return self.coefs[2](self.spin)
 
-
-    # Assuming a negative exponential decay of spin rate, about 3-4% loss per second
+    def windv(self):
+        return self.air.windshear(self.p[2])
+    # Spin Decay using aerodynamic torque coefficients
     def spinrate(self, dt):
         self.angularvelocity -= (5 *np.pi * np.dot(self.v, self.v) * self.air.density  * self.radius * self.decaycoef()) / (2 * self.mass) * dt
-        #self.angularvelocity -=  dt * self.angularvelocity/ 20
+        #self.angularvelocity -=  dt * self.angularvelocity/ 20 exponential decay
         self.spin = self.radius * self.angularvelocity / np.linalg.norm(self.v) # Unsure on the 2
+        #print((5 *np.pi * np.dot(self.v, self.v) * self.air.density  * self.radius * self.decaycoef()) / (2 * self.mass), self.angularvelocity/ 20)
 
     # Calculate the net acceleration on the golf ball
     def acceleration(self):
@@ -125,30 +137,36 @@ class Ball:
     # Advance the ball's state by one time step (dt) Using the implicit midpoint method
     def step(self, dt):
 
+        # Save old position and velocity
+        pold = copy(self.p)
+        vold = copy(self.v)
+        wold = copy(self.windv())
+        sold = copy(self.angularvelocity)
 
-        pold = self.p
-        vold = self.v
+        # Initial guess for midpoint
+        self.p += (self.v + self.windv()) * 0.5 * dt
+        self.v = vold + wold - self.windv() + self.acceleration() * 0.5 * dt
+        self.spinrate(dt * 0.5)
 
-        self.p += (self.v + self.air.v) * 0.5 * dt
-        self.v += self.acceleration() * 0.5 * dt
+        # Iterate to refine midpoint using the implicit midpoint method
+        ''' for i in range(0, 5):
+            tempp = copy(self.p)
+            tempv = copy(self.v)
 
+            # Implicit midpoint updates
+            self.p = pold + (self.v + self.windv()) * 0.5 * dt
+            self.v = vold + wold - self.windv() + self.acceleration() * 0.5 * dt
 
-        for i in range(0,5):
-
-            tempp = self.p
-            tempv = self.v
-            self.p = pold + (self.v + self.air.v) * 0.5 * dt
-            self.v = vold + self.acceleration() * 0.5 * dt
-
-            if (tempp - self.p).all() < 0.001 and (tempv - self.v).all() < 0.001:
+            # Check convergence using a norm for vector difference
+            if np.linalg.norm(tempp - self.p) < 0.001 and np.linalg.norm(tempv - self.v) < 0.001:
                 break
+        '''
 
-
-        # Update position and velocity using Euler's method
-        self.p = pold + (self.v + self.air.v) * dt  # Update position based on current velocity
-        self.v = vold + self.acceleration() * dt  # Update velocity based on calculated acceleration
-
-
+        # No final Euler update of p and v, since midpoint is already updated
+        #( WHY DOES THIS DOUBLE UPDATE??)
+        self.p = pold + (self.v + self.windv()) * dt  # Full time step update for position
+        self.v = vold + wold - self.windv() + self.acceleration() * dt  # Full time step update for velocity
+        self.angularvelocity = sold
         # Spin decay, decreasing the angular velocity
         self.spinrate(dt)
 
@@ -160,7 +178,7 @@ class Ball:
         while self.p[2] >= 0:  # Continue simulation while the ball is above ground
             tracevp[0].append(copy(self.p))  # Record current position
             tracevp[1].append(copy(self.v))  # Record current velocity
-            tracevp[2].append([self.dragcoef(), self.liftcoef(), self.decaycoef()])
+            tracevp[2].append([self.dragcoef(), self.liftcoef(), self.decaycoef()]) # Record current coefficients
             self.step(dt)  # Advance to the next time step
 
         return np.array(tracevp)  # Return the recorded trajectory data
@@ -168,19 +186,23 @@ class Ball:
 
 def main():
     air = Air(np.array([0, 0, 0])) # Initialize Wind
-    launch = Launch(133, 14.4, 0, 3270, 0, 0.0) # Initial Launch Parameters, strong driver shot
+    launch = Launch(160, 13, 0, 2700, 10, teeh=0) # Initial Launch Parameters, strong driver shot
 
     ball = Ball(launch, air)
 
-    print(ball.re()) # reynolds number of ball
+    print(ball.coefs[0](0))
+    print("Initial Spin Rate: ",ball.spin)
+    print("Initial Reynolds Number: ", ball.re())
+    print(ball.v) # reynolds number of ball
 
     dt = 0.005
     trace = ball.simulate(dt)
 
 
 
+
     final = ball.p
-    print(ball.v)
+
     print(ball.p)
     time = len(trace[0]) * dt
 
@@ -195,6 +217,8 @@ def main():
     print("Drift Distance: ", final[1]*mty, "Yards")
     print("Max Height: ", peak * mty, "Yards")
     print("Flight Time: ", time, "Seconds")
+    print("Final Spin:", ball.angularvelocity * 30 / np.pi, "RPM")
+    print("Descent Angle:", 90 - np.arcsin(np.linalg.norm(np.cross(ball.v, np.array([0, 0, 1]))/np.linalg.norm(ball.v))) * 180 / np.pi)
     # 3d Vector Vis
 
     fig = plt.figure()# Add a 3D subplot
@@ -214,29 +238,40 @@ def main():
     ax.plot(trace[0, :, 0], trace[0, :, 1], 0)
 
     # Velocity Plot
-    #ax.plot(trace[1, :, 0], trace[1, :, 1], trace[1, :, 2], color='green')
+    ax.plot(trace[1, :, 0], trace[1, :, 1], trace[1, :, 2], color='green')
+    #ax.plot(trace[1, :, 0] + trace[0, :, 0], trace[1, :, 1] + trace[0, :, 1], trace[1, :, 2] + trace[0, :, 2], color='green')
 
     # Show vectors for initial velocity and spin axis
     ax.quiver(*[0,0,0], *launch.velocity, color='black')
     ax.quiver(*[0, 0, 0], *launch.spinaxis * 30, color='grey' )
 
+
     set_axes_equal(ax)
+    plt.show()
+
 
     #ax2 = fig.add_subplot(211)
-    #ax2.plot(np.sqrt(trace[1] * trace[1]))
+    #x = np.linspace(0, 50, 100)
+    #ax2.plot(np.sqrt(trace[1, :, 0] ** 2 + trace[1, :, 2] ** 2))
+    #ax2.plot(trace[1, :, 2])
 
     # Show the plot
 
-    '''
-    ax2 = fig.add_subplot(511)
 
-    ax2.plot(trace[2, :, 0], color='red')
-    ax2.plot(trace[2, :, 1], color='blue')
-    ax2.plot(trace[2, :, 2], color='green')
-    '''
+   # ax2 = fig.add_subplot(211)
+
+    #x = np.linspace(0, 0.3, 100)
+
+    #ax2.plot(x, ball.coefs[0](x))
+    #ax2.plot(x, ball.coefs[1](x))
+
+    #ax2.plot(trace[2, :, 0], color='red')
+    #ax2.plot(trace[2, :, 1], color='blue')
+    #ax2.plot(trace[2, :, 2], color='green')
 
 
-    plt.show()
+
+
 
 
 def set_axes_equal(ax):
